@@ -1,0 +1,173 @@
+import React, { useState, useEffect } from 'react';
+import { View, Text, Button, TextInput, Image, FlatList, Alert } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import firebase from 'firebase/app';
+import 'firebase/firestore';
+import 'firebase/storage';
+import { auth } from './firebase';
+
+firebase.initializeApp({
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_STORAGE_BUCKET",
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_APP_ID"
+});
+
+// Payment Screen (Customer)
+export function PaymentScreen() {
+  const [amount, setAmount] = useState('');
+
+  const submitPayment = async () => {
+    if (!amount) {
+      Alert.alert('Error', 'Enter payment amount');
+      return;
+    }
+
+    const userId = auth.currentUser?.uid;
+    if (!userId) {
+      Alert.alert('Error', 'Please sign in first');
+      return;
+    }
+
+    try {
+      await firebase.firestore().collection('payments').add({
+        userId,
+        amount: parseFloat(amount),
+        status: 'pending',
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      Alert.alert(
+        'Payment Request Submitted',
+        'Send payment to:\n\nKPay: 09740934466\nWave Money: 09740934466\n\nUpload proof after payment.'
+      );
+      setAmount('');
+    } catch (error) {
+      console.error('Error submitting payment:', error);
+      Alert.alert('Error', 'Payment submission failed');
+    }
+  };
+
+  return (
+    <View style={{ padding: 20 }}>
+      <Text style={{ fontSize: 18, fontWeight: 'bold' }}>Payment Methods</Text>
+      <Text>KPay: 09740934466</Text>
+      <Text>Wave Money: 09740934466</Text>
+
+      <TextInput
+        placeholder="Enter Amount"
+        value={amount}
+        onChangeText={setAmount}
+        keyboardType="numeric"
+        style={{ borderWidth: 1, padding: 10, marginVertical: 10 }}
+      />
+      <Button title="Apply Payment" onPress={submitPayment} />
+    </View>
+  );
+}
+
+// Payment Proof Upload
+export function PaymentUploadScreen() {
+  const [image, setImage] = useState(null);
+
+  const pickImage = async () => {
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 1,
+    });
+
+    if (!result.cancelled) {
+      setImage(result.uri);
+    }
+  };
+
+  const uploadImage = async () => {
+    if (!image) {
+      Alert.alert('Error', 'Please select an image');
+      return;
+    }
+
+    const userId = auth.currentUser?.uid;
+    if (!userId) {
+      Alert.alert('Error', 'Please sign in first');
+      return;
+    }
+
+    const response = await fetch(image);
+    const blob = await response.blob();
+    const filename = `payments/${userId}_${new Date().getTime()}.jpg`;
+    const ref = firebase.storage().ref().child(filename);
+
+    try {
+      await ref.put(blob);
+      const downloadURL = await ref.getDownloadURL();
+
+      await firebase.firestore().collection('payments').add({
+        userId,
+        image: downloadURL,
+        status: 'pending',
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      Alert.alert('Success', 'Payment proof uploaded. Wait for admin approval.');
+      setImage(null);
+    } catch (error) {
+      console.error('Upload Error:', error);
+      Alert.alert('Error', 'Failed to upload image');
+    }
+  };
+
+  return (
+    <View style={{ padding: 20 }}>
+      <Button title="Pick Payment Screenshot" onPress={pickImage} />
+      {image && <Image source={{ uri: image }} style={{ width: 200, height: 200, marginTop: 10 }} />}
+      <Button title="Upload Proof" onPress={uploadImage} />
+    </View>
+  );
+}
+
+// Admin Approval Panel
+export function AdminScreen() {
+  const [payments, setPayments] = useState([]);
+
+  useEffect(() => {
+    const unsubscribe = firebase.firestore().collection('payments')
+      .where('status', '==', 'pending')
+      .onSnapshot(snapshot => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setPayments(data);
+      });
+
+    return () => unsubscribe();
+  }, []);
+
+  const updatePaymentStatus = async (id, status) => {
+    try {
+      await firebase.firestore().collection('payments').doc(id).update({ status });
+    } catch (error) {
+      console.error('Error updating status:', error);
+    }
+  };
+
+  return (
+    <View style={{ padding: 20 }}>
+      <Text>Admin Panel - Approve Payments</Text>
+      <FlatList
+        data={payments}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <View style={{ marginBottom: 20 }}>
+            <Text>User: {item.userId}</Text>
+            {item.image && <Image source={{ uri: item.image }} style={{ width: 200, height: 200 }} />}
+            <Button title="Approve" onPress={() => updatePaymentStatus(item.id, 'approved')} />
+            <Button title="Reject" onPress={() => updatePaymentStatus(item.id, 'rejected')} />
+          </View>
+        )}
+      />
+    </View>
+  );
+}
